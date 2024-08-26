@@ -1,0 +1,295 @@
+name: Cross-platform build
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+  schedule:
+    - cron: '0 0 1 * *'  # Monthly build on the first day of each month at midnight UTC
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.create_release.outputs.release_id }}
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+      tag_name: ${{ steps.create_release.outputs.tag_name }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get current timestamp
+        id: get-timestamp
+        run: echo "timestamp=$(date -u +'%Y-%m-%d')" >> $GITHUB_ENV
+
+      - name: Fetch existing tags and get the next one
+        id: fetch-tags
+        run: |
+          tags=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                      "https://api.github.com/repos/${{ github.repository }}/tags" | jq -r '.[].name')
+          timestamp="${{ env.timestamp }}"
+          base_tag="v0.0.1-${timestamp}"
+          next_tag="$base_tag-0"
+
+          if [[ $tags == *"$base_tag"* ]]; then
+            max_number=$(echo "$tags" | grep "^$base_tag-" | sed -E 's/.*-([0-9]+)$/\1/' | sort -n | tail -n 1)
+            next_number=$((max_number + 1))
+            next_tag="$base_tag-$next_number"
+          fi
+
+          echo "next_tag=$next_tag" >> $GITHUB_ENV
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const response = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: process.env.next_tag,
+              name: `pgModeler build ${{ env.timestamp }}`,
+              body: `
+            ## Automated pgModeler build containing both Linux and Windows binaries.
+
+            ### Downloading
+            Download any of the pgmodeler[windows|linux]-binaries.[zip|tar.gz] files, extract them, and run the pgmodeler executable file.
+
+            ### Extra files
+            Both Source code[zip|tar.gz] files have the source code of pgmodeler-builder. This repository is empty and only have the GitHub action to create the binary files.
+              `,
+              draft: true,
+              prerelease: true,
+            });
+            core.setOutput('release_id', response.data.id);
+            core.setOutput('upload_url', response.data.upload_url);
+            core.setOutput('tag_name', process.env.next_tag);
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  windows-build:
+    runs-on: windows-latest
+    needs: create-release  # Wait for the release to be created
+
+    strategy:
+      matrix:
+        branch: [ main ] #, develop, 1.5.4 ]  # Matrix to specify branches
+        qt: ['6.x']  # Using matrix to specify the version of Qt
+
+    defaults:
+      run:
+        shell: msys2 {0}  # Specifies using MSYS2 shell
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        repository: pgmodeler/pgmodeler  # Specifies the repository to checkout
+        ref: ${{ matrix.branch }}  # Checks out the specific branch from the matrix
+
+    - uses: msys2/setup-msys2@v2
+      with:
+        msystem: MINGW64
+        update: true
+        install: zip base-devel mingw-w64-x86_64-make mingw-w64-x86_64-clang mingw-w64-x86_64-postgresql mingw-w64-x86_64-qt6
+
+    - name: Running qmake
+      run: |
+        cd $GITHUB_WORKSPACE
+        qmake-qt6 pgmodeler.pro -spec win32-clang-g++ -r PREFIX=D:/a/pgmodeler/pgmodeler/build \
+          XML_INC=$(cygpath -m /mingw64/include/libxml2) \
+          XML_LIB=$(cygpath -m /mingw64/bin/libxml2-2.dll) \
+          PGSQL_INC=$(cygpath -m /mingw64/include) \
+          PGSQL_LIB=$(cygpath -m /mingw64/bin/libpq.dll) \
+          CONFIG+=debug
+
+    - name: Building pgModeler
+      run: mingw32-make -j6
+
+    - name: Installing pgModeler
+      run: mingw32-make install
+
+    - name: Running windeployqt
+      run: |
+        cd D:/a/pgmodeler/pgmodeler/build
+        windeployqt-qt6 pgmodeler.exe gui.dll
+
+    - name: Copy necessary libraries
+      run: |
+        for f in D:/a/_temp/msys64/mingw64/bin/*.dll; do
+          if [ ! -f D:/a/pgmodeler/pgmodeler/build/$(basename "$f") ]; then
+            cp "$f" D:/a/pgmodeler/pgmodeler/build/
+          fi
+        done
+
+    - name: Create the build artifact
+      run: |
+        SOURCE_PATH="D:/a/pgmodeler/pgmodeler/build/"
+        ZIP_PATH="D:/a/pgmodeler/pgmodeler-windows-binaries.zip"
+        zip -r $ZIP_PATH $SOURCE_PATH
+
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      if: github.event_name == 'push' || github.event_name == 'pull_request'
+      with:
+        name: pgmodeler-windows-binaries
+        path: "D:/a/pgmodeler/pgmodeler-windows-binaries.zip"
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Upload Release build
+      uses: actions/upload-release-asset@v1
+      if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+      with:
+        upload_url: ${{ needs.create-release.outputs.upload_url }}
+        asset_path: "D:/a/pgmodeler/pgmodeler-windows-binaries.zip"
+        asset_name: pgmodeler-windows-binaries-${{ matrix.branch }}.zip
+        asset_content_type: application/zip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  linux-build:
+    runs-on: ubuntu-latest
+    needs: create-release  # Wait for the release to be created
+
+    strategy:
+      matrix:
+        branch: [ main ] # , develop, 1.5.4 ]  # Matrix to specify branches
+        qt: ['6.6.1']
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        repository: pgmodeler/pgmodeler  # Specifies the repository to checkout
+        path: 'pgmodeler'
+        ref: ${{ matrix.branch }}  # Checks out the specific branch from the matrix
+
+    - name: Installing Qt framework
+      uses: jurplel/install-qt-action@v3
+      with:
+        version: ${{ matrix.qt }}
+
+    - name: Running qmake
+      run: |
+        cd $GITHUB_WORKSPACE/pgmodeler
+        ls -ltah
+        pwd
+        git clone https://github.com/pgmodeler/plugins
+        qmake pgmodeler.pro -r PREFIX=$GITHUB_WORKSPACE/pgmodeler/build CONFIG+=debug
+
+    - name: Building pgModeler
+      run: |
+        cd $GITHUB_WORKSPACE/pgmodeler
+        ls -ltah
+        pwd
+        make -j6
+
+    - name: Installing pgModeler
+      run: |
+        cd $GITHUB_WORKSPACE/pgmodeler
+        ls -ltah
+        pwd
+        make install
+
+    - name: Create the release build
+      run: |
+        tar -czf $GITHUB_WORKSPACE/pgmodeler-linux-binaries-${{ matrix.branch }}.tar.gz \
+          $GITHUB_WORKSPACE/pgmodeler/build
+
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      if: github.event_name == 'push' || github.event_name == 'pull_request'
+      with:
+        name: pgmodeler-linux-binaries
+        path: ${{ github.workspace }}/pgmodeler-linux-binaries-${{ matrix.branch }}.tar.gz
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Upload Release Asset for Linux
+      uses: actions/upload-release-asset@v1
+      if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+      with:
+        upload_url: ${{ needs.create-release.outputs.upload_url }}
+        asset_path: ${{ github.workspace }}/pgmodeler-linux-binaries-${{ matrix.branch }}.tar.gz
+        asset_name: pgmodeler-linux-binaries-${{ matrix.branch }}.tar.gz
+        asset_content_type: application/gzip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  cleanup-release:
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - create-release
+      - linux-build
+      - windows-build
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check and Delete Release if Only Default Assets Exist
+        uses: actions/github-script@v7
+        with:
+          script: |
+
+            const release_id = '${{ needs.create-release.outputs.release_id }}';
+            const tag_name = '${{ needs.create-release.outputs.tag_name }}';
+
+            const assetsResponse = await github.rest.repos.listReleaseAssets({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: release_id
+            });
+
+            const assets = assetsResponse.data;
+            const defaultAssets = assets.filter(asset =>
+              asset.name === 'Source code (zip)' || asset.name === 'Source code (tar.gz)'
+            );
+
+            if (assets.length === defaultAssets.length) {
+              console.log(`Only default source code assets found. Deleting release with ID: ${release_id}`);
+              await github.rest.repos.deleteRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                release_id: release_id
+              });
+
+              console.log(`Release deleted. Now deleting the tag: ${tag_name}`);
+
+              try {
+                await github.rest.git.getRef({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ref: `tags/${tag_name}`
+                });
+                console.log(`Tag ${tag_name} exists. Proceeding to delete.`);
+                await github.rest.git.deleteRef({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ref: `tags/${tag_name}`
+                });
+                console.log(`Release and tag ${tag_name} deleted successfully.`);
+              } catch (error) {
+                if (error.status === 404) {
+                  console.log(`Tag ${tag_name} does not exist. No action needed.`);
+                } else {
+                  console.log(`Error checking for tag existence: ${error.message}`);
+                  throw error; // Rethrow error if it's not a 404
+                }
+              }
+
+            } else {
+              console.log('Non-default assets found. This release will not be deleted.');
+              console.log('Moving the release to draft=false, prerelease=false.');
+
+              await github.rest.repos.updateRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                release_id: release_id,
+                draft: false,
+                prerelease: false
+              });
+            }
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
