@@ -72,9 +72,12 @@ jobs:
     needs: create-release  # Wait for the release to be created
 
     strategy:
+      max-parallel: 1
+      fail-fast: true
       matrix:
         # We can put in the branch both branches and release tags
-        branch: [ v1.1.4, 1.1.5, 1.2.0-alpha1 ]
+        # branch: [ v1.1.4, 1.1.5, 1.2.0-alpha1 ]
+        branch: [ v1.1.4 ]
         qt: ['6.x']
 
     defaults:
@@ -126,15 +129,15 @@ jobs:
     - name: Create the build artifact
       run: |
         SOURCE_PATH="D:/a/pgmodeler/pgmodeler/build/"
-        ZIP_PATH=D:/a/pgmodeler/pgmodeler-windows-binaries-${{ matrix.branch }}.zip
+        ZIP_PATH=D:/a/pgmodeler/pgmodeler-windows-build-${{ matrix.branch }}.zip
         zip -r $ZIP_PATH $SOURCE_PATH
 
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
       if: github.event_name == 'push' || github.event_name == 'pull_request'
       with:
-        name: pgmodeler-windows-binaries-${{ matrix.branch }}
-        path: D:/a/pgmodeler/pgmodeler-windows-binaries-${{ matrix.branch }}.zip
+        name: pgmodeler-windows-build-${{ matrix.branch }}
+        path: D:/a/pgmodeler/pgmodeler-windows-build-${{ matrix.branch }}.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -143,19 +146,22 @@ jobs:
       if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
       with:
         upload_url: ${{ needs.create-release.outputs.upload_url }}
-        asset_path: D:/a/pgmodeler/pgmodeler-windows-binaries-${{ matrix.branch }}.zip
-        asset_name: pgmodeler-windows-binaries-${{ matrix.branch }}.zip
+        asset_path: D:/a/pgmodeler/pgmodeler-windows-build-${{ matrix.branch }}.zip
+        asset_name: pgmodeler-windows-build-${{ matrix.branch }}.zip
         asset_content_type: application/zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   linux-build:
-    runs-on: ubuntu-latest
-    needs: create-release  # Wait for the release to be created
+    runs-on: ubuntu-20.04 # Do not run on ubuntu-latest or linuxdeployqt will fail
+    needs: create-release
 
     strategy:
+      max-parallel: 1
+      fail-fast: true
       matrix:
-        branch: [ v1.1.4, 1.1.5, 1.2.0-alpha1 ]
+        # branch: [ v1.1.4, 1.1.5, 1.2.0-alpha1 ]
+        branch: [ v1.1.4 ]
         qt: ['6.6.1']
 
     steps:
@@ -170,6 +176,14 @@ jobs:
       uses: jurplel/install-qt-action@v3
       with:
         version: ${{ matrix.qt }}
+
+    - name: Install deps
+      run: |
+        # If moved to newer linux version use qt6
+        sudo apt-get install -y \
+            libxcb-cursor0 libxcb-xinerama0 \
+            libxcb-xkb1 libxkbcommon-x11-0 \
+            build-essential libfuse2
 
     - name: Running qmake
       run: |
@@ -201,44 +215,111 @@ jobs:
         mkdir $INSTALLATION_ROOT/lib/qtplugins/imageformats
         mkdir $INSTALLATION_ROOT/lib/qtplugins/printsupport
         mkdir $INSTALLATION_ROOT/lib/qtplugins/platforms
+        mkdir $INSTALLATION_ROOT/lib/qtplugins/tls
         echo -e "[Paths]\nPrefix=.\nPlugins=lib/qtplugins\nLibraries=lib" > $INSTALLATION_ROOT/qt.conf
         cd $QT_ROOT/lib
         ls -ltah
-        #cp libQt6DBus.so.6 libQt6PrintSupport.so.6 libQt6Widgets.so.6 libQt6Network.so.6 libQt6Gui.so.6 \
-        #    libQt6Core.so.6 libQt5XcbQpa.so.6 libQt6Svg.so.6 libicui18n.so.* libicuuc.so.* libicudata.so.* $INSTALLATION_ROOT/lib
-        cp -a * $INSTALLATION_ROOT/lib/
+
+        cp libQt6DBus.so.6 libQt6PrintSupport.so.6 libQt6Widgets.so.6 \
+            libQt6Network.so.6 libQt6Gui.so.6 libQt6Core.so.6 libQt6XcbQpa.so.6 \
+            libQt6Svg.so.6 libQt6OpenGL.so.6 libicui18n.so.* libicuuc.so.* \
+            libicudata.so.* \
+            $INSTALLATION_ROOT/lib/
 
         echo "List all files in the QT plugin folder"
         ls -ltah $QT_ROOT/plugins/
 
-        cd $QT_ROOT/plugins/imageformats
-        #cp -r imageformats/libqgif.so imageformats/libqico.so imageformats/libqjpeg.so \
-        #    imageformats/libqsvg.so $INSTALLATION_ROOT/lib/qtplugins/imageformats
-        cp -a * $INSTALLATION_ROOT/lib/qtplugins/imageformats
+        cd $QT_ROOT/plugins/
+        cp -r imageformats/libqgif.so imageformats/libqico.so \
+            imageformats/libqjpeg.so imageformats/libqsvg.so \
+            $INSTALLATION_ROOT/lib/qtplugins/imageformats
+        cp -r printsupport/libcupsprintersupport.so \
+            $INSTALLATION_ROOT/lib/qtplugins/printsupport
+        cp -r platforms/libqxcb.so platforms/libqoffscreen.so \
+            $INSTALLATION_ROOT/lib/qtplugins/platforms
+        cp -r tls/* \
+            $INSTALLATION_ROOT/lib/qtplugins/tls
 
-        cd $QT_ROOT/plugins/printsupport
-        #cp -r printsupport/libcupsprintersupport.so $INSTALLATION_ROOT/lib/qtplugins/printsupport
-        cp -a * $INSTALLATION_ROOT/lib/qtplugins/printsupport
+    - name: Download linuxdeployqt
+      run: |
+        cd $GITHUB_WORKSPACE/pgmodeler/build/
+        wget https://github.com/probonopd/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-x86_64.AppImage
+        chmod +x linuxdeployqt-continuous-x86_64.AppImage
+        #wget "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage"
+        #chmod a+x appimagetool-x86_64.AppImage
 
-        cd $QT_ROOT/plugins/platforms
-        # cp -r platforms/libqxcb.so platforms/libqoffscreen.so $INSTALLATION_ROOT/lib/qtplugins/platforms
-        cp -a * $INSTALLATION_ROOT/lib/qtplugins/platforms
+    #- name: Install mlocate
+    #  run: |
+    #    sudo apt-get update && sudo apt-get install -y mlocate
+    #    sudo updatedb
 
-        mkdir $INSTALLATION_ROOT/lib/qtplugins/tls
-        cd $QT_ROOT/plugins/tls
-        cp -a * $INSTALLATION_ROOT/lib/qtplugins/tls/
+    #- name: Locate libcanvas
+    #  run: |
+    #      locate libcanvas.so.1 || echo "libcanvas not found"
+
+    - name: Create the pgmodeler image
+      run: |
+        cd $GITHUB_WORKSPACE/pgmodeler/build/
+        VER=${{ matrix.branch }}
+        # TODO: Make sure that if the version is only with excluded chars a default is added
+        export VERSION=$(echo "$VER" | sed 's/[^0-9.]//g')
+
+        export LD_LIBRARY_PATH=$GITHUB_WORKSPACE/pgmodeler/build/lib/:$LD_LIBRARY_PATH
+        export LD_LIBRARY_PATH=$GITHUB_WORKSPACE/pgmodeler/build/lib/pgmodeler/:$LD_LIBRARY_PATH
+        export LD_LIBRARY_PATH=$GITHUB_WORKSPACE/pgmodeler/libs/:$LD_LIBRARY_PATH
+        #export LD_LIBRARY_PATH=$GITHUB_WORKSPACE/pgmodeler/libs/libutils/:$LD_LIBRARY_PATH
+        #export LD_LIBRARY_PATH=$GITHUB_WORKSPACE/pgmodeler/libs/libcanvas/:$LD_LIBRARY_PATH
+        echo "Updated LD_LIBRARY_PATH: $LD_LIBRARY_PATH"
+
+        DESKTOP_FOLDER=$GITHUB_WORKSPACE/pgmodeler/build/share/applications/
+        #DESKTOP_FOLDER=$GITHUB_WORKSPACE/pgmodeler/build/bin/
+        mkdir -p $DESKTOP_FOLDER
+        DESKTOP_PATH=$DESKTOP_FOLDER/pgmodeler.desktop
+        echo -e "[Desktop Entry]\nType=Application\nName=pgModeler\nComment=NoComment\nExec=pgmodeller\nIcon=pgmodeler\nCategories=Office;" > $DESKTOP_PATH
+        cat $DESKTOP_PATH
+        cp $DESKTOP_PATH $GITHUB_WORKSPACE/pgmodeler/
+        cp $DESKTOP_PATH $GITHUB_WORKSPACE/pgmodeler/build/
+        cp $DESKTOP_PATH $GITHUB_WORKSPACE/pgmodeler/build/share/
+        #ICON_FOLDER=$GITHUB_WORKSPACE/pgmodeler/build/share/icons/hicolor/256x256/apps/
+        ICON_FOLDER=$GITHUB_WORKSPACE/pgmodeler/
+        mkdir -p $ICON_FOLDER
+        cp $GITHUB_WORKSPACE/pgmodeler/assets/conf/pgmodeler_logo.png $ICON_FOLDER/pgmodeler.png
+
+        ./linuxdeployqt-continuous-x86_64.AppImage \
+            ./bin/pgmodeler \
+            -qmake=$Qt6_DIR/bin/qmake \
+            -verbose=2 \
+            -appimage
+
+    - name: Rename and list images
+      run: |
+        cd $GITHUB_WORKSPACE/pgmodeler/build/
+        echo "----"
+        ls -ltah
+        echo "----"
+        ls -ltah bin/
+        mv pgModeler*.AppImage pgmodeler-${{ matrix.branch }}.AppImage
 
     - name: Create the release build
       run: |
-        tar -czf $GITHUB_WORKSPACE/pgmodeler-linux-binaries-${{ matrix.branch }}.tar.gz \
+        tar -czf $GITHUB_WORKSPACE/pgmodeler-linux-build-${{ matrix.branch }}.tar.gz \
           $GITHUB_WORKSPACE/pgmodeler/build
 
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
       if: github.event_name == 'push' || github.event_name == 'pull_request'
       with:
-        name: pgmodeler-linux-binaries-${{ matrix.branch }}.tar.gz
-        path: ${{ github.workspace }}/pgmodeler-linux-binaries-${{ matrix.branch }}.tar.gz
+        name: pgmodeler-linux-build-${{ matrix.branch }}.tar.gz
+        path: ${{ github.workspace }}/pgmodeler-linux-build-${{ matrix.branch }}.tar.gz
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Upload build image
+      uses: actions/upload-artifact@v4
+      if: github.event_name == 'push' || github.event_name == 'pull_request'
+      with:
+        name: pgmodeler-${{ matrix.branch }}.AppImage
+        path: ${{ github.workspace }}/pgmodeler/build/pgmodeler-${{ matrix.branch }}.Appimage
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -247,8 +328,19 @@ jobs:
       if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
       with:
         upload_url: ${{ needs.create-release.outputs.upload_url }}
-        asset_path: ${{ github.workspace }}/pgmodeler-linux-binaries-${{ matrix.branch }}.tar.gz
-        asset_name: pgmodeler-linux-binaries-${{ matrix.branch }}.tar.gz
+        asset_path: ${{ github.workspace }}/pgmodeler-linux-build-${{ matrix.branch }}.tar.gz
+        asset_name: pgmodeler-linux-build-${{ matrix.branch }}.tar.gz
+        asset_content_type: application/gzip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Upload Release image build for Linux
+      uses: actions/upload-release-asset@v1
+      if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+      with:
+        upload_url: ${{ needs.create-release.outputs.upload_url }}
+        asset_path: ${{ github.workspace }}/pgmodeler/build/pgmodeler-${{ matrix.branch }}.AppImage
+        asset_name: pgmodeler-${{ matrix.branch }}.AppImage
         asset_content_type: application/gzip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
