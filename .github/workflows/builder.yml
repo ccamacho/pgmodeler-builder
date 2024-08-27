@@ -73,8 +73,9 @@ jobs:
 
     strategy:
       matrix:
-        branch: [ main ] #, develop, 1.5.4 ]  # Matrix to specify branches
-        qt: ['6.x']  # Using matrix to specify the version of Qt
+        # We can put in the branch both branches and release tags
+        branch: [ v1.1.4, 1.1.5, 1.2.0-alpha1 ]
+        qt: ['6.x']
 
     defaults:
       run:
@@ -125,15 +126,15 @@ jobs:
     - name: Create the build artifact
       run: |
         SOURCE_PATH="D:/a/pgmodeler/pgmodeler/build/"
-        ZIP_PATH="D:/a/pgmodeler/pgmodeler-windows-binaries.zip"
+        ZIP_PATH=D:/a/pgmodeler/pgmodeler-windows-binaries-${{ matrix.branch }}.zip
         zip -r $ZIP_PATH $SOURCE_PATH
 
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
       if: github.event_name == 'push' || github.event_name == 'pull_request'
       with:
-        name: pgmodeler-windows-binaries
-        path: "D:/a/pgmodeler/pgmodeler-windows-binaries.zip"
+        name: pgmodeler-windows-binaries-${{ matrix.branch }}
+        path: D:/a/pgmodeler/pgmodeler-windows-binaries-${{ matrix.branch }}.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -142,7 +143,7 @@ jobs:
       if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
       with:
         upload_url: ${{ needs.create-release.outputs.upload_url }}
-        asset_path: "D:/a/pgmodeler/pgmodeler-windows-binaries.zip"
+        asset_path: D:/a/pgmodeler/pgmodeler-windows-binaries-${{ matrix.branch }}.zip
         asset_name: pgmodeler-windows-binaries-${{ matrix.branch }}.zip
         asset_content_type: application/zip
       env:
@@ -154,7 +155,7 @@ jobs:
 
     strategy:
       matrix:
-        branch: [ main ] # , develop, 1.5.4 ]  # Matrix to specify branches
+        branch: [ v1.1.4, 1.1.5, 1.2.0-alpha1 ]
         qt: ['6.6.1']
 
     steps:
@@ -192,6 +193,41 @@ jobs:
         pwd
         make install
 
+    - name: Resolving dependencies
+      run: |
+        INSTALLATION_ROOT=$GITHUB_WORKSPACE/pgmodeler/build
+        QT_ROOT=/home/runner/work/pgmodeler-builder/Qt/6.6.1/gcc_64/
+        mkdir $INSTALLATION_ROOT/lib/qtplugins
+        mkdir $INSTALLATION_ROOT/lib/qtplugins/imageformats
+        mkdir $INSTALLATION_ROOT/lib/qtplugins/printsupport
+        mkdir $INSTALLATION_ROOT/lib/qtplugins/platforms
+        echo -e "[Paths]\nPrefix=.\nPlugins=lib/qtplugins\nLibraries=lib" > $INSTALLATION_ROOT/qt.conf
+        cd $QT_ROOT/lib
+        ls -ltah
+        #cp libQt6DBus.so.6 libQt6PrintSupport.so.6 libQt6Widgets.so.6 libQt6Network.so.6 libQt6Gui.so.6 \
+        #    libQt6Core.so.6 libQt5XcbQpa.so.6 libQt6Svg.so.6 libicui18n.so.* libicuuc.so.* libicudata.so.* $INSTALLATION_ROOT/lib
+        cp -a * $INSTALLATION_ROOT/lib/
+
+        echo "List all files in the QT plugin folder"
+        ls -ltah $QT_ROOT/plugins/
+
+        cd $QT_ROOT/plugins/imageformats
+        #cp -r imageformats/libqgif.so imageformats/libqico.so imageformats/libqjpeg.so \
+        #    imageformats/libqsvg.so $INSTALLATION_ROOT/lib/qtplugins/imageformats
+        cp -a * $INSTALLATION_ROOT/lib/qtplugins/imageformats
+
+        cd $QT_ROOT/plugins/printsupport
+        #cp -r printsupport/libcupsprintersupport.so $INSTALLATION_ROOT/lib/qtplugins/printsupport
+        cp -a * $INSTALLATION_ROOT/lib/qtplugins/printsupport
+
+        cd $QT_ROOT/plugins/platforms
+        # cp -r platforms/libqxcb.so platforms/libqoffscreen.so $INSTALLATION_ROOT/lib/qtplugins/platforms
+        cp -a * $INSTALLATION_ROOT/lib/qtplugins/platforms
+
+        mkdir $INSTALLATION_ROOT/lib/qtplugins/tls
+        cd $QT_ROOT/plugins/tls
+        cp -a * $INSTALLATION_ROOT/lib/qtplugins/tls/
+
     - name: Create the release build
       run: |
         tar -czf $GITHUB_WORKSPACE/pgmodeler-linux-binaries-${{ matrix.branch }}.tar.gz \
@@ -201,7 +237,7 @@ jobs:
       uses: actions/upload-artifact@v4
       if: github.event_name == 'push' || github.event_name == 'pull_request'
       with:
-        name: pgmodeler-linux-binaries
+        name: pgmodeler-linux-binaries-${{ matrix.branch }}.tar.gz
         path: ${{ github.workspace }}/pgmodeler-linux-binaries-${{ matrix.branch }}.tar.gz
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
