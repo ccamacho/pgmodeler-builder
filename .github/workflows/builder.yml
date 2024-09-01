@@ -105,7 +105,8 @@ jobs:
           XML_LIB=$(cygpath -m /mingw64/bin/libxml2-2.dll) \
           PGSQL_INC=$(cygpath -m /mingw64/include) \
           PGSQL_LIB=$(cygpath -m /mingw64/bin/libpq.dll) \
-          CONFIG+=debug
+          CONFIG+=debug \
+          CONFIG+=release # CONFIG+=static
 
     - name: Building pgModeler
       run: mingw32-make -j6
@@ -124,7 +125,10 @@ jobs:
     - name: Running windeployqt
       run: |
         cd D:/a/pgmodeler/pgmodeler/build
-        windeployqt-qt6 --compiler-runtime pgmodeler.exe gui.dll
+        windeployqt-qt6 \
+            --compiler-runtime \
+            --release \
+            pgmodeler.exe gui.dll
 
     - name: Create the build artifact
       run: |
@@ -191,7 +195,10 @@ jobs:
         ls -ltah
         pwd
         git clone https://github.com/pgmodeler/plugins
-        qmake pgmodeler.pro -r PREFIX=$GITHUB_WORKSPACE/pgmodeler/build CONFIG+=debug
+        qmake pgmodeler.pro \
+            -r PREFIX=$GITHUB_WORKSPACE/pgmodeler/build \
+            CONFIG+=debug \
+            CONFIG+=release # CONFIG+=static
 
     - name: Building pgModeler
       run: |
