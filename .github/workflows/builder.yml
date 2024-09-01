@@ -291,15 +291,6 @@ jobs:
             -verbose=2 \
             -appimage
 
-    - name: Rename and list images
-      run: |
-        cd $GITHUB_WORKSPACE/pgmodeler/build/
-        echo "----"
-        ls -ltah
-        echo "----"
-        ls -ltah bin/
-        mv pgModeler*.AppImage pgmodeler-${{ matrix.branch }}.AppImage
-
     - name: Create the release build
       run: |
         tar -czf $GITHUB_WORKSPACE/pgmodeler-linux-build-${{ matrix.branch }}.tar.gz \
@@ -318,8 +309,10 @@ jobs:
       uses: actions/upload-artifact@v4
       if: github.event_name == 'push' || github.event_name == 'pull_request'
       with:
-        name: pgmodeler-${{ matrix.branch }}.AppImage
-        path: ${{ github.workspace }}/pgmodeler/build/pgmodeler-${{ matrix.branch }}.Appimage
+        # 1.1.4 is the branch name but sanitized, sanitize ${{ matrix.branch }} before
+        # like pgmodeler-${{ matrix.branch }}.AppImage
+        name: pgModeler-1.1.4-x86_64.AppImage
+        path: ${{ github.workspace }}/pgmodeler/build/pgModeler-1.1.4-x86_64.AppImage
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -339,8 +332,11 @@ jobs:
       if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
       with:
         upload_url: ${{ needs.create-release.outputs.upload_url }}
-        asset_path: ${{ github.workspace }}/pgmodeler/build/pgmodeler-${{ matrix.branch }}.AppImage
-        asset_name: pgmodeler-${{ matrix.branch }}.AppImage
+        # 1.1.4 is the branch name but sanitized, sanitize ${{ matrix.branch }} before
+        # like pgmodeler-${{ matrix.branch }}.AppImage
+        # asset_path: ${{ github.workspace }}/pgmodeler/build/pgmodeler-${{ matrix.branch }}.AppImage
+        asset_path: ${{ github.workspace }}/pgmodeler/build/pgModeler-1.1.4-x86_64.AppImage
+        asset_name: pgModeler-1.1.4-x86_64.AppImage
         asset_content_type: application/gzip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
