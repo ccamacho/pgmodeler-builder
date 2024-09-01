@@ -113,11 +113,6 @@ jobs:
     - name: Installing pgModeler
       run: mingw32-make install
 
-    - name: Running windeployqt
-      run: |
-        cd D:/a/pgmodeler/pgmodeler/build
-        windeployqt-qt6 pgmodeler.exe gui.dll
-
     - name: Copy necessary libraries
       run: |
         for f in D:/a/_temp/msys64/mingw64/bin/*.dll; do
@@ -125,6 +120,11 @@ jobs:
             cp "$f" D:/a/pgmodeler/pgmodeler/build/
           fi
         done
+
+    - name: Running windeployqt
+      run: |
+        cd D:/a/pgmodeler/pgmodeler/build
+        windeployqt-qt6 --compiler-runtime pgmodeler.exe gui.dll
 
     - name: Create the build artifact
       run: |
