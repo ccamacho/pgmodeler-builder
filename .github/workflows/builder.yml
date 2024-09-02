@@ -144,8 +144,12 @@ jobs:
         SolidCompression=yes
 
         [Files]
+        ; Main application executable
         Source: "D:/a/pgmodeler/pgmodeler/build/pgmodeler.exe"; DestDir: "{app}"; Flags: ignoreversion
-        ;Source: "C:\\path\\to\\data\\*"; DestDir: "{app}\\data"; Flags: recursesubdirs createallsubdirs
+
+        ; Include Qt DLLs (replace with actual DLLs used by your application)
+        Source: "D:/a/pgmodeler/pgmodeler/build/*"; DestDir: "{app}"; Flags: ignoreversion createallsubdirs recursesubdirs
+        ;Source: "D:/a/pgmodeler/pgmodeler/build/platforms/*.dll"; DestDir: "{app}/platforms"; Flags: ignoreversion createallsubdirs
 
         [Icons]
         Name: "{group}\\pgModeler"; Filename: "{app}\\pgmodeler.exe"
@@ -155,7 +159,7 @@ jobs:
         Filename: "{app}\\pgmodeler.exe"; Description: "{cm:LaunchProgram,PGModeler}"; Flags: nowait postinstall skipifsilent
         EOF
 
-    - name: Create the MSI installer
+    - name: Create the iscc installer
       run: |
         cd D:/a/pgmodeler/pgmodeler/build
         export ISCC_PATH="/c/Program Files (x86)/Inno Setup 6/iscc.exe"
