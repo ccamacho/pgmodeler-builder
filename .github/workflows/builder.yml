@@ -227,7 +227,7 @@ jobs:
         cd $QT_ROOT/lib
         ls -ltah
 
-        cp libQt6DBus.so.6 libQt6PrintSupport.so.6 libQt6Widgets.so.6 \
+        cp -La libQt6DBus.so.6 libQt6PrintSupport.so.6 libQt6Widgets.so.6 \
             libQt6Network.so.6 libQt6Gui.so.6 libQt6Core.so.6 libQt6XcbQpa.so.6 \
             libQt6Svg.so.6 libQt6OpenGL.so.6 libicui18n.so.* libicuuc.so.* \
             libicudata.so.* \
@@ -237,14 +237,14 @@ jobs:
         ls -ltah $QT_ROOT/plugins/
 
         cd $QT_ROOT/plugins/
-        cp -r imageformats/libqgif.so imageformats/libqico.so \
+        cp -La imageformats/libqgif.so imageformats/libqico.so \
             imageformats/libqjpeg.so imageformats/libqsvg.so \
             $INSTALLATION_ROOT/lib/qtplugins/imageformats
-        cp -r printsupport/libcupsprintersupport.so \
+        cp -La printsupport/libcupsprintersupport.so \
             $INSTALLATION_ROOT/lib/qtplugins/printsupport
-        cp -r platforms/libqxcb.so platforms/libqoffscreen.so \
+        cp -La platforms/libqxcb.so platforms/libqoffscreen.so \
             $INSTALLATION_ROOT/lib/qtplugins/platforms
-        cp -r tls/* \
+        cp -La tls/* \
             $INSTALLATION_ROOT/lib/qtplugins/tls
 
     - name: Download linuxdeployqt
@@ -252,8 +252,6 @@ jobs:
         cd $GITHUB_WORKSPACE/pgmodeler/build/
         wget https://github.com/probonopd/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-x86_64.AppImage
         chmod +x linuxdeployqt-continuous-x86_64.AppImage
-        #wget "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage"
-        #chmod a+x appimagetool-x86_64.AppImage
 
     #- name: Install mlocate
     #  run: |
@@ -279,7 +277,6 @@ jobs:
         echo "Updated LD_LIBRARY_PATH: $LD_LIBRARY_PATH"
 
         DESKTOP_FOLDER=$GITHUB_WORKSPACE/pgmodeler/build/share/applications/
-        #DESKTOP_FOLDER=$GITHUB_WORKSPACE/pgmodeler/build/bin/
         mkdir -p $DESKTOP_FOLDER
         DESKTOP_PATH=$DESKTOP_FOLDER/pgmodeler.desktop
         echo -e "[Desktop Entry]\nType=Application\nName=pgModeler\nComment=NoComment\nExec=pgmodeller\nIcon=pgmodeler\nCategories=Office;" > $DESKTOP_PATH
@@ -287,7 +284,6 @@ jobs:
         cp $DESKTOP_PATH $GITHUB_WORKSPACE/pgmodeler/
         cp $DESKTOP_PATH $GITHUB_WORKSPACE/pgmodeler/build/
         cp $DESKTOP_PATH $GITHUB_WORKSPACE/pgmodeler/build/share/
-        #ICON_FOLDER=$GITHUB_WORKSPACE/pgmodeler/build/share/icons/hicolor/256x256/apps/
         ICON_FOLDER=$GITHUB_WORKSPACE/pgmodeler/
         mkdir -p $ICON_FOLDER
         cp $GITHUB_WORKSPACE/pgmodeler/assets/conf/pgmodeler_logo.png $ICON_FOLDER/pgmodeler.png
