@@ -197,6 +197,9 @@ jobs:
         git clone https://github.com/pgmodeler/plugins
         qmake pgmodeler.pro \
             -r PREFIX=$GITHUB_WORKSPACE/pgmodeler/build \
+               BINDIR=$GITHUB_WORKSPACE/pgmodeler/build/bin \
+               PRIVATEBINDIR=$GITHUB_WORKSPACE/pgmodeler/build/bin \
+               PRIVATELIBDIR=$GITHUB_WORKSPACE/pgmodeler/build/lib \
             CONFIG+=debug \
             CONFIG+=release # CONFIG+=static
 
