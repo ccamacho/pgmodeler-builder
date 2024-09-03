@@ -72,7 +72,7 @@ jobs:
     needs: create-release  # Wait for the release to be created
 
     strategy:
-      max-parallel: 1
+      max-parallel: 3
       fail-fast: true
       matrix:
         # We can put in the branch both branches and release tags
@@ -164,27 +164,53 @@ jobs:
         export ISCC_PATH="/c/Program Files (x86)/Inno Setup 6/iscc.exe"
         "$ISCC_PATH" D:/a/pgmodeler/pgmodeler/build/pgModeler.iss
 
-    - name: Create the build artifact
-      run: |
-        SOURCE_PATH="D:/a/pgmodeler/pgmodeler/build/"
-        ZIP_PATH=D:/a/pgmodeler/pgmodeler-windows-build-${{ matrix.branch }}.zip
-        zip -r $ZIP_PATH $SOURCE_PATH
+    #- name: Create the build artifact
+    #  run: |
+    #    SOURCE_PATH="D:/a/pgmodeler/pgmodeler/build/"
+    #    ZIP_PATH=D:/a/pgmodeler/pgmodeler-windows-build-${{ matrix.branch }}.zip
+    #    zip -r $ZIP_PATH $SOURCE_PATH
 
-    - name: Upload build artifacts
+    - name: Upload the setup file as an artifact
       uses: actions/upload-artifact@v4
       if: github.event_name == 'push' || github.event_name == 'pull_request'
       with:
-        name: pgmodeler-windows-build-${{ matrix.branch }}
-        path: D:/a/pgmodeler/pgmodeler-windows-build-${{ matrix.branch }}.zip
+        name: pgmodeler-windows-setup-${{ matrix.branch }}.exe
+        path: D:/a/pgmodeler/pgmodeler/build/Output/pgmodeler_setup.exe
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Upload Release build
+    - name: Upload the setup file in a release build
       uses: actions/upload-release-asset@v1
       if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
       with:
         upload_url: ${{ needs.create-release.outputs.upload_url }}
-        asset_path: D:/a/pgmodeler/pgmodeler-windows-build-${{ matrix.branch }}.zip
+        asset_path: D:/a/pgmodeler/pgmodeler/build/Output/pgmodeler_setup.exe
+        asset_name: pgmodeler-windows-setup-${{ matrix.branch }}.exe
+        asset_content_type: application/zip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Upload the build files as an artifact
+      uses: actions/upload-artifact@v4
+      if: github.event_name == 'push' || github.event_name == 'pull_request'
+      with:
+        name: pgmodeler-windows-build-${{ matrix.branch }}.zip
+        path: D:/a/pgmodeler/pgmodeler/build
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Zip the build files
+      if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+      run: |
+        cd D:/a/pgmodeler/pgmodeler
+        zip -r pgmodeler-windows-build-${{ matrix.branch }}.zip build/*
+
+    - name: Upload the build zip file in a release build
+      uses: actions/upload-release-asset@v1
+      if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+      with:
+        upload_url: ${{ needs.create-release.outputs.upload_url }}
+        asset_path: D:/a/pgmodeler/pgmodeler/pgmodeler-windows-build-${{ matrix.branch }}.zip
         asset_name: pgmodeler-windows-build-${{ matrix.branch }}.zip
         asset_content_type: application/zip
       env:
@@ -195,7 +221,7 @@ jobs:
     needs: create-release
 
     strategy:
-      max-parallel: 1
+      max-parallel: 3
       fail-fast: true
       matrix:
         branch: [ v1.1.4, 1.1.5, 1.2.0-alpha1 ]
@@ -289,15 +315,6 @@ jobs:
         wget https://github.com/probonopd/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-x86_64.AppImage
         chmod +x linuxdeployqt-continuous-x86_64.AppImage
 
-    #- name: Install mlocate
-    #  run: |
-    #    sudo apt-get update && sudo apt-get install -y mlocate
-    #    sudo updatedb
-
-    #- name: Locate libcanvas
-    #  run: |
-    #      locate libcanvas.so.1 || echo "libcanvas not found"
-
     - name: Sanitize version string
       run: |
         # Remove leading 'v' if present
@@ -335,21 +352,7 @@ jobs:
             -verbose=2 \
             -appimage
 
-    - name: Create the release build
-      run: |
-        tar -czf $GITHUB_WORKSPACE/pgmodeler-linux-build-${{ matrix.branch }}.tar.gz \
-          $GITHUB_WORKSPACE/pgmodeler/build
-
-    - name: Upload build artifacts
-      uses: actions/upload-artifact@v4
-      if: github.event_name == 'push' || github.event_name == 'pull_request'
-      with:
-        name: pgmodeler-linux-build-${{ matrix.branch }}.tar.gz
-        path: ${{ github.workspace }}/pgmodeler-linux-build-${{ matrix.branch }}.tar.gz
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-    - name: Upload build image
+    - name: Upload the AppImage as an artifact
       uses: actions/upload-artifact@v4
       if: github.event_name == 'push' || github.event_name == 'pull_request'
       with:
@@ -359,24 +362,39 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Upload Release Asset for Linux
-      uses: actions/upload-release-asset@v1
-      if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-      with:
-        upload_url: ${{ needs.create-release.outputs.upload_url }}
-        asset_path: ${{ github.workspace }}/pgmodeler-linux-build-${{ matrix.branch }}.tar.gz
-        asset_name: pgmodeler-linux-build-${{ matrix.branch }}.tar.gz
-        asset_content_type: application/gzip
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-    - name: Upload Release image build for Linux
+    - name: Upload the AppImage file in a release build
       uses: actions/upload-release-asset@v1
       if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
       with:
         upload_url: ${{ needs.create-release.outputs.upload_url }}
         asset_path: ${{ github.workspace }}/pgmodeler/build/pgModeler-${{ env.SANITIZED_VERSION }}-x86_64.AppImage
-        asset_name: pgModeler-${{ env.SANITIZED_VERSION }}-x86_64.AppImage.zip
+        asset_name: pgModeler-${{ env.SANITIZED_VERSION }}-x86_64.AppImage
+        asset_content_type: application/gzip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Upload the build files as an artifact
+      uses: actions/upload-artifact@v4
+      if: github.event_name == 'push' || github.event_name == 'pull_request'
+      with:
+        name: pgmodeler-linux-build-${{ matrix.branch }}.zip
+        path: ${{ github.workspace }}/pgmodeler/build
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Zip the build files
+      if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+      run: |
+        cd ${{ github.workspace }}/pgmodeler
+        zip -r pgmodeler-linux-build-${{ matrix.branch }}.zip build/*
+
+    - name: Upload the build zip file in a release build
+      uses: actions/upload-release-asset@v1
+      if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+      with:
+        upload_url: ${{ needs.create-release.outputs.upload_url }}
+        asset_path: ${{ github.workspace }}/pgmodeler/pgmodeler-linux-build-${{ matrix.branch }}.zip
+        asset_name: pgmodeler-linux-build-${{ matrix.branch }}.zip
         asset_content_type: application/gzip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
