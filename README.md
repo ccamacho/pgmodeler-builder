@@ -26,6 +26,29 @@ improvements are welcomed with PRs.
 - Including commit information when creating builds from a
   branch.
 
+## What is released?
+
+In the [releases section](https://github.com/ccamacho/pgmodeler-builder/releases)
+there will be a monthly build including:
+
+- A build tarball for the Windows and Linux compiled sources.
+- An AppImage for Linux.
+- A setup file for Windows.
+
+Each release includes the tags and releases included in the
+[Windows](https://github.com/ccamacho/pgmodeler-builder/blob/main/.github/workflows/builder.yml#L79)
+and
+[Linux](https://github.com/ccamacho/pgmodeler-builder/blob/main/.github/workflows/builder.yml#L227)
+jobs at the time it was executed. Like:
+
+```
+matrix:
+  branch: [ v1.1.4, 1.1.5, 1.2.0-alpha1 ]
+```
+
+For adding new versions or releases include the new ones in the list to be built.
+For any new release make sure to make the update for both windows and linux jobs.
+
 ## Consider donating
 
 If you use, like, and think pgModeler deserves 
