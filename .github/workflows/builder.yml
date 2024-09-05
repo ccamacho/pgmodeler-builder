@@ -259,8 +259,9 @@ jobs:
                BINDIR=$GITHUB_WORKSPACE/pgmodeler/build/bin \
                PRIVATEBINDIR=$GITHUB_WORKSPACE/pgmodeler/build/bin \
                PRIVATELIBDIR=$GITHUB_WORKSPACE/pgmodeler/build/lib \
-            CONFIG+=debug \
-            CONFIG+=release # CONFIG+=static
+               CONFDIR=$GITHUB_WORKSPACE/pgmodeler/build/bin \
+               CONFIG+=debug \
+               CONFIG+=release # CONFIG+=static
 
     - name: Building pgModeler
       run: |

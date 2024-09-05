@@ -49,6 +49,12 @@ matrix:
 For adding new versions or releases include the new ones in the list to be built.
 For any new release make sure to make the update for both windows and linux jobs.
 
+## Usage hints
+
+### Linux
+
+- Create the default config folders: `mkdir -p ~/.config/pgmodeler-1.2`
+
 ## Consider donating
 
 If you use, like, and think pgModeler deserves 
