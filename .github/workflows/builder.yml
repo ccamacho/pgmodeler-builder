@@ -2,28 +2,26 @@ name: Cross-platform build
 
 on:
   workflow_dispatch:
-  pull_request:
   push:
+    branches: [main]
+  pull_request:
   schedule:
-    - cron: '0 0 1 * *'  # Monthly build on the first day of each month at midnight UTC
+    - cron: '0 0 1 * *'
 
 jobs:
   create-release:
     runs-on: ubuntu-latest
     outputs:
       release_id: ${{ steps.create_release.outputs.release_id }}
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
       tag_name: ${{ steps.create_release.outputs.tag_name }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Get current timestamp
-        id: get-timestamp
         run: echo "timestamp=$(date -u +'%Y-%m-%d')" >> $GITHUB_ENV
 
       - name: Fetch existing tags and get the next one
-        id: fetch-tags
         run: |
           tags=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
                       "https://api.github.com/repos/${{ github.repository }}/tags" | jq -r '.[].name')
@@ -62,77 +60,125 @@ jobs:
               prerelease: true,
             });
             core.setOutput('release_id', response.data.id);
-            core.setOutput('upload_url', response.data.upload_url);
             core.setOutput('tag_name', process.env.next_tag);
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   windows-build:
     runs-on: windows-latest
-    needs: create-release  # Wait for the release to be created
+    needs: create-release
 
     strategy:
-      max-parallel: 3
-      fail-fast: true
+      fail-fast: false
       matrix:
-        # We can put in the branch both branches and release tags
-        branch: [ v1.1.5, v1.2.0-alpha1, develop ]
-        qt: ['6.x']
+        include:
+          - branch: v1.2.3
+            build_system: qmake
+            qt: '6.6.1'
+          - branch: v2.0.0-beta
+            build_system: cmake
+            qt: '6.6.1'
 
     defaults:
       run:
-        shell: msys2 {0}  # Specifies using MSYS2 shell
+        shell: msys2 {0}
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
       with:
-        repository: pgmodeler/pgmodeler  # Specifies the repository to checkout
-        ref: ${{ matrix.branch }}  # Checks out the specific branch from the matrix
+        repository: pgmodeler/pgmodeler
+        ref: ${{ matrix.branch }}
 
     - uses: msys2/setup-msys2@v2
       with:
         msystem: MINGW64
         update: true
-        install: zip base-devel mingw-w64-x86_64-make mingw-w64-x86_64-clang mingw-w64-x86_64-postgresql mingw-w64-x86_64-qt6
+        install: >-
+          zip base-devel
+          mingw-w64-x86_64-make
+          mingw-w64-x86_64-clang
+          mingw-w64-x86_64-cmake
+          mingw-w64-x86_64-postgresql
+          mingw-w64-x86_64-qt6
+          mingw-w64-x86_64-libxml2
 
+    - name: Set build directory
+      run: echo "BUILD_DIR=$(cygpath -m "$GITHUB_WORKSPACE/build")" >> $GITHUB_ENV
+
+    # --- qmake build (v1.x) ---
     - name: Running qmake
+      if: matrix.build_system == 'qmake'
       run: |
         cd $GITHUB_WORKSPACE
-        qmake-qt6 pgmodeler.pro -spec win32-clang-g++ -r PREFIX=D:/a/pgmodeler/pgmodeler/build \
+        qmake pgmodeler.pro -spec win32-clang-g++ -r \
+          PREFIX=$BUILD_DIR \
           XML_INC=$(cygpath -m /mingw64/include/libxml2) \
-          XML_LIB=$(cygpath -m /mingw64/bin/libxml2-2.dll) \
+          XML_LIB=$(cygpath -m /mingw64/lib/libxml2.dll.a) \
           PGSQL_INC=$(cygpath -m /mingw64/include) \
           PGSQL_LIB=$(cygpath -m /mingw64/bin/libpq.dll) \
-          CONFIG+=debug \
-          CONFIG+=release # CONFIG+=static
+          CONFIG+=release
 
-    - name: Building pgModeler
-      run: mingw32-make -j6
+    - name: Building with qmake
+      if: matrix.build_system == 'qmake'
+      run: mingw32-make -j$(nproc)
 
-    - name: Installing pgModeler
+    - name: Installing qmake build
+      if: matrix.build_system == 'qmake'
       run: mingw32-make install
 
-    - name: Copy necessary libraries
+    # --- cmake build (v2.x) ---
+    - name: Patch cmake paths for CI
+      if: matrix.build_system == 'cmake'
       run: |
-        for f in D:/a/_temp/msys64/mingw64/bin/*.dll; do
-          if [ ! -f D:/a/pgmodeler/pgmodeler/build/$(basename "$f") ]; then
-            cp "$f" D:/a/pgmodeler/pgmodeler/build/
-          fi
+        cd $GITHUB_WORKSPACE
+        MSYS2_ROOT=$(cygpath -m /)
+        MSYS2_ROOT=${MSYS2_ROOT%/}
+        sed -i "s|C:/msys64|${MSYS2_ROOT}|g" BuildConfs.cmake
+        sed -i '1s/^/#include <QApplication>\n/' libs/libgui/src/tools/modelexporthelper.cpp
+
+    - name: Running cmake
+      if: matrix.build_system == 'cmake'
+      run: |
+        cd $GITHUB_WORKSPACE
+        cmake -B build-dir -G "MinGW Makefiles" \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DPGM_PREFIX=$BUILD_DIR
+
+    - name: Building with cmake
+      if: matrix.build_system == 'cmake'
+      run: cmake --build $GITHUB_WORKSPACE/build-dir -j$(nproc)
+
+    - name: Installing cmake build
+      if: matrix.build_system == 'cmake'
+      run: cmake --install $GITHUB_WORKSPACE/build-dir
+
+    # --- common post-build ---
+    - name: Copy runtime libraries
+      run: |
+        for lib in libgcc_s_seh-1.dll libstdc++-6.dll libwinpthread-1.dll \
+                   libxml2-2.dll libpq.dll libiconv-2.dll libintl-8.dll \
+                   zlib1.dll liblzma-5.dll libzstd.dll \
+                   libssl-3-x64.dll libcrypto-3-x64.dll \
+                   libicudt*.dll libicuin*.dll libicuuc*.dll \
+                   libpcre2-16-0.dll libpcre2-8-0.dll \
+                   libpng16-16.dll libbz2-1.dll libharfbuzz-0.dll \
+                   libfreetype-6.dll libglib-2.0-0.dll libdouble-conversion.dll \
+                   libb2-1.dll libmd4c.dll libbrotlidec.dll libbrotlicommon.dll \
+                   libgraphite2.dll; do
+          for f in /mingw64/bin/$lib; do
+            [ -f "$f" ] && cp -n "$f" "$BUILD_DIR/" 2>/dev/null || true
+          done
         done
 
     - name: Running windeployqt
       run: |
-        cd D:/a/pgmodeler/pgmodeler/build
-        windeployqt-qt6 \
-            --compiler-runtime \
-            --release \
-            pgmodeler.exe gui.dll
+        cd $BUILD_DIR
+        windeployqt --compiler-runtime --release pgmodeler.exe
 
     - name: Generate the .iss file
       run: |
-        cd D:/a/pgmodeler/pgmodeler/build
-        cat <<EOF > ./pgModeler.iss
+        cat <<EOF > $BUILD_DIR/pgModeler.iss
         [Setup]
         AppName=pgModeler
         AppVersion=${{ matrix.branch }}
@@ -143,12 +189,8 @@ jobs:
         SolidCompression=yes
 
         [Files]
-        ; Main application executable
-        Source: "D:/a/pgmodeler/pgmodeler/build/pgmodeler.exe"; DestDir: "{app}"; Flags: ignoreversion
-
-        ; Include Qt DLLs (replace with actual DLLs used by your application)
-        Source: "D:/a/pgmodeler/pgmodeler/build/*"; DestDir: "{app}"; Flags: ignoreversion createallsubdirs recursesubdirs
-        ;Source: "D:/a/pgmodeler/pgmodeler/build/platforms/*.dll"; DestDir: "{app}/platforms"; Flags: ignoreversion createallsubdirs
+        Source: "$BUILD_DIR/pgmodeler.exe"; DestDir: "{app}"; Flags: ignoreversion
+        Source: "$BUILD_DIR/*"; DestDir: "{app}"; Flags: ignoreversion createallsubdirs recursesubdirs
 
         [Icons]
         Name: "{group}\\pgModeler"; Filename: "{app}\\pgmodeler.exe"
@@ -160,425 +202,406 @@ jobs:
 
     - name: Create the iscc installer
       run: |
-        cd D:/a/pgmodeler/pgmodeler/build
         export ISCC_PATH="/c/Program Files (x86)/Inno Setup 6/iscc.exe"
-        "$ISCC_PATH" D:/a/pgmodeler/pgmodeler/build/pgModeler.iss
-
-    #- name: Create the build artifact
-    #  run: |
-    #    SOURCE_PATH="D:/a/pgmodeler/pgmodeler/build/"
-    #    ZIP_PATH=D:/a/pgmodeler/pgmodeler-windows-build-${{ matrix.branch }}.zip
-    #    zip -r $ZIP_PATH $SOURCE_PATH
+        "$ISCC_PATH" $BUILD_DIR/pgModeler.iss
 
     - name: Upload the setup file as an artifact
       uses: actions/upload-artifact@v4
-      if: github.event_name == 'push' || github.event_name == 'pull_request'
       with:
         name: pgmodeler-windows-setup-${{ matrix.branch }}.exe
-        path: D:/a/pgmodeler/pgmodeler/build/Output/pgmodeler_setup.exe
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        path: ${{ env.BUILD_DIR }}/Output/pgmodeler_setup.exe
 
-    - name: Upload the setup file in a release build
-      uses: actions/upload-release-asset@v1
-      if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-      with:
-        upload_url: ${{ needs.create-release.outputs.upload_url }}
-        asset_path: D:/a/pgmodeler/pgmodeler/build/Output/pgmodeler_setup.exe
-        asset_name: pgmodeler-windows-setup-${{ matrix.branch }}.exe
-        asset_content_type: application/zip
+    - name: Upload the setup file to release
+      shell: bash
+      run: |
+        cp "$BUILD_DIR/Output/pgmodeler_setup.exe" \
+           "$GITHUB_WORKSPACE/pgmodeler-windows-setup-${{ matrix.branch }}.exe"
+        gh release upload "${{ needs.create-release.outputs.tag_name }}" \
+          "$GITHUB_WORKSPACE/pgmodeler-windows-setup-${{ matrix.branch }}.exe" \
+          --repo "${{ github.repository }}" --clobber
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Upload the build files as an artifact
       uses: actions/upload-artifact@v4
-      if: github.event_name == 'push' || github.event_name == 'pull_request'
       with:
         name: pgmodeler-windows-build-${{ matrix.branch }}.zip
-        path: D:/a/pgmodeler/pgmodeler/build
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        path: ${{ env.BUILD_DIR }}
 
     - name: Zip the build files
-      if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
       run: |
-        cd D:/a/pgmodeler/pgmodeler
+        cd $GITHUB_WORKSPACE
         zip -r pgmodeler-windows-build-${{ matrix.branch }}.zip build/*
 
-    - name: Upload the build zip file in a release build
-      uses: actions/upload-release-asset@v1
-      if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-      with:
-        upload_url: ${{ needs.create-release.outputs.upload_url }}
-        asset_path: D:/a/pgmodeler/pgmodeler/pgmodeler-windows-build-${{ matrix.branch }}.zip
-        asset_name: pgmodeler-windows-build-${{ matrix.branch }}.zip
-        asset_content_type: application/zip
+    - name: Upload the build zip to release
+      shell: bash
+      run: |
+        gh release upload "${{ needs.create-release.outputs.tag_name }}" \
+          "$GITHUB_WORKSPACE/pgmodeler-windows-build-${{ matrix.branch }}.zip" \
+          --repo "${{ github.repository }}" --clobber
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   linux-build:
-    runs-on: ubuntu-20.04 # Do not run on ubuntu-latest or linuxdeployqt will fail
+    runs-on: ubuntu-22.04
     needs: create-release
 
     strategy:
-      max-parallel: 3
-      fail-fast: true
+      fail-fast: false
       matrix:
-        branch: [ v1.1.5, v1.2.0-alpha1, develop ]
-        qt: ['6.6.1']
+        include:
+          - branch: v1.2.3
+            build_system: qmake
+            qt: '6.6.1'
+          - branch: v2.0.0-beta
+            build_system: cmake
+            qt: '6.6.1'
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
       with:
-        repository: pgmodeler/pgmodeler  # Specifies the repository to checkout
+        repository: pgmodeler/pgmodeler
         path: 'pgmodeler'
-        ref: ${{ matrix.branch }}  # Checks out the specific branch from the matrix
+        ref: ${{ matrix.branch }}
 
     - name: Installing Qt framework
-      uses: jurplel/install-qt-action@v3
+      uses: jurplel/install-qt-action@v4
       with:
         version: ${{ matrix.qt }}
+        cache: true
 
-    - name: Install deps
+    - name: Install dependencies
       run: |
-        # If moved to newer linux version use qt6
+        sudo apt-get update
         sudo apt-get install -y \
             libxcb-cursor0 libxcb-xinerama0 \
             libxcb-xkb1 libxkbcommon-x11-0 \
-            build-essential libfuse2
+            build-essential libfuse2 \
+            libpq-dev libxml2-dev \
+            clang imagemagick
 
+    - name: Set install directory
+      run: |
+        echo "INSTALL_DIR=$GITHUB_WORKSPACE/pgmodeler/AppDir/usr" >> $GITHUB_ENV
+        echo "QT_ROOT=$(qmake -query QT_INSTALL_PREFIX)" >> $GITHUB_ENV
+
+    # --- qmake build (v1.x) ---
     - name: Running qmake
+      if: matrix.build_system == 'qmake'
       run: |
         cd $GITHUB_WORKSPACE/pgmodeler
-        ls -ltah
-        pwd
-        # git clone https://github.com/pgmodeler/plugins
         qmake pgmodeler.pro \
-            -r PREFIX=$GITHUB_WORKSPACE/pgmodeler/build \
-               BINDIR=$GITHUB_WORKSPACE/pgmodeler/build/bin \
-               PRIVATEBINDIR=$GITHUB_WORKSPACE/pgmodeler/build/bin \
-               PRIVATELIBDIR=$GITHUB_WORKSPACE/pgmodeler/build/lib \
-               CONFDIR=$GITHUB_WORKSPACE/pgmodeler/build/bin \
-               CONFIG+=debug \
-               CONFIG+=release # CONFIG+=static
+            -r PREFIX=$INSTALL_DIR \
+               BINDIR=$INSTALL_DIR/bin \
+               PRIVATEBINDIR=$INSTALL_DIR/bin \
+               PRIVATELIBDIR=$INSTALL_DIR/lib \
+               CONFDIR=$INSTALL_DIR/bin \
+               CONFIG+=release
 
-    - name: Building pgModeler
+    - name: Building with qmake
+      if: matrix.build_system == 'qmake'
       run: |
         cd $GITHUB_WORKSPACE/pgmodeler
-        ls -ltah
-        pwd
-        make -j6
+        make -j$(nproc)
 
-    - name: Installing pgModeler
+    - name: Installing qmake build
+      if: matrix.build_system == 'qmake'
       run: |
         cd $GITHUB_WORKSPACE/pgmodeler
-        ls -ltah
-        pwd
         make install
 
-    - name: Resolving dependencies
+    # --- cmake build (v2.x) ---
+    - name: Patch source for CI compatibility
+      if: matrix.build_system == 'cmake'
       run: |
-        INSTALLATION_ROOT=$GITHUB_WORKSPACE/pgmodeler/build
-        QT_ROOT=/home/runner/work/pgmodeler-builder/Qt/6.6.1/gcc_64/
-        mkdir $INSTALLATION_ROOT/lib/qtplugins
-        mkdir $INSTALLATION_ROOT/lib/qtplugins/imageformats
-        mkdir $INSTALLATION_ROOT/lib/qtplugins/printsupport
-        mkdir $INSTALLATION_ROOT/lib/qtplugins/platforms
-        mkdir $INSTALLATION_ROOT/lib/qtplugins/tls
-        echo -e "[Paths]\nPrefix=.\nPlugins=lib/qtplugins\nLibraries=lib" > $INSTALLATION_ROOT/qt.conf
-        cd $QT_ROOT/lib
-        ls -ltah
+        cd $GITHUB_WORKSPACE/pgmodeler
+        sed -i '1s/^/#include <QApplication>\n/' libs/libgui/src/tools/modelexporthelper.cpp
 
-        cp -La libQt6DBus.so.6 libQt6PrintSupport.so.6 libQt6Widgets.so.6 \
-            libQt6Network.so.6 libQt6Gui.so.6 libQt6Core.so.6 libQt6XcbQpa.so.6 \
-            libQt6Svg.so.6 libQt6OpenGL.so.6 libicui18n.so.* libicuuc.so.* \
-            libicudata.so.* \
-            $INSTALLATION_ROOT/lib/
-
-        echo "List all files in the QT plugin folder"
-        ls -ltah $QT_ROOT/plugins/
-
-        cd $QT_ROOT/plugins/
-        cp -La imageformats/libqgif.so imageformats/libqico.so \
-            imageformats/libqjpeg.so imageformats/libqsvg.so \
-            $INSTALLATION_ROOT/lib/qtplugins/imageformats
-        cp -La printsupport/libcupsprintersupport.so \
-            $INSTALLATION_ROOT/lib/qtplugins/printsupport
-        cp -La platforms/libqxcb.so platforms/libqoffscreen.so \
-            $INSTALLATION_ROOT/lib/qtplugins/platforms
-        cp -La tls/* \
-            $INSTALLATION_ROOT/lib/qtplugins/tls
-
-    - name: Download linuxdeployqt
+    - name: Running cmake
+      if: matrix.build_system == 'cmake'
       run: |
-        cd $GITHUB_WORKSPACE/pgmodeler/build/
-        wget https://github.com/probonopd/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-x86_64.AppImage
-        chmod +x linuxdeployqt-continuous-x86_64.AppImage
+        cd $GITHUB_WORKSPACE/pgmodeler
+        cmake -B build-dir \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DPGM_PREFIX=$INSTALL_DIR \
+          -DCMAKE_PREFIX_PATH=$QT_ROOT \
+          -DAPPIMAGE_BUILD=ON
 
+    - name: Building with cmake
+      if: matrix.build_system == 'cmake'
+      run: cmake --build $GITHUB_WORKSPACE/pgmodeler/build-dir -j$(nproc)
+
+    - name: Installing cmake build
+      if: matrix.build_system == 'cmake'
+      run: cmake --install $GITHUB_WORKSPACE/pgmodeler/build-dir
+
+    # --- common AppImage creation ---
     - name: Sanitize version string
       run: |
-        # Remove leading 'v' if present
         VER=${{ matrix.branch }}
         SANITIZED_VERSION=${VER#v}
         echo "SANITIZED_VERSION=$SANITIZED_VERSION" >> $GITHUB_ENV
 
-    - name: Create the pgmodeler image
+    - name: Create desktop file and prepare icon
       run: |
-        cd $GITHUB_WORKSPACE/pgmodeler/build/
+        cd $GITHUB_WORKSPACE/pgmodeler
+        cat > pgmodeler.desktop <<DESKTOP
+        [Desktop Entry]
+        Type=Application
+        Name=pgModeler
+        Comment=PostgreSQL Database Modeler
+        Exec=pgmodeler
+        Icon=pgmodeler
+        Categories=Development;Database;
+        DESKTOP
+        convert assets/conf/pgmodeler_logo.png -resize 256x256 pgmodeler.png
+
+    - name: Download linuxdeploy
+      run: |
+        cd $GITHUB_WORKSPACE/pgmodeler
+        wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+        wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+        chmod +x linuxdeploy-x86_64.AppImage linuxdeploy-plugin-qt-x86_64.AppImage
+
+    - name: Create the pgmodeler AppImage
+      run: |
+        cd $GITHUB_WORKSPACE/pgmodeler
         export VERSION=$SANITIZED_VERSION
+        export QMAKE=$QT_ROOT/bin/qmake
+        export LD_LIBRARY_PATH=$INSTALL_DIR/lib:$INSTALL_DIR/lib/pgmodeler:$LD_LIBRARY_PATH
 
-        export LD_LIBRARY_PATH=$GITHUB_WORKSPACE/pgmodeler/build/lib/:$LD_LIBRARY_PATH
-        export LD_LIBRARY_PATH=$GITHUB_WORKSPACE/pgmodeler/build/lib/pgmodeler/:$LD_LIBRARY_PATH
-        export LD_LIBRARY_PATH=$GITHUB_WORKSPACE/pgmodeler/libs/:$LD_LIBRARY_PATH
-        #export LD_LIBRARY_PATH=$GITHUB_WORKSPACE/pgmodeler/libs/libutils/:$LD_LIBRARY_PATH
-        #export LD_LIBRARY_PATH=$GITHUB_WORKSPACE/pgmodeler/libs/libcanvas/:$LD_LIBRARY_PATH
-        echo "Updated LD_LIBRARY_PATH: $LD_LIBRARY_PATH"
+        ./linuxdeploy-x86_64.AppImage \
+            --appdir AppDir \
+            --executable AppDir/usr/bin/pgmodeler \
+            --desktop-file pgmodeler.desktop \
+            --icon-file pgmodeler.png \
+            --plugin qt \
+            --output appimage
 
-        DESKTOP_FOLDER=$GITHUB_WORKSPACE/pgmodeler/build/share/applications/
-        mkdir -p $DESKTOP_FOLDER
-        DESKTOP_PATH=$DESKTOP_FOLDER/pgmodeler.desktop
-        echo -e "[Desktop Entry]\nType=Application\nName=pgModeler\nComment=NoComment\nExec=pgmodeller\nIcon=pgmodeler\nCategories=Office;" > $DESKTOP_PATH
-        cat $DESKTOP_PATH
-        cp $DESKTOP_PATH $GITHUB_WORKSPACE/pgmodeler/
-        cp $DESKTOP_PATH $GITHUB_WORKSPACE/pgmodeler/build/
-        cp $DESKTOP_PATH $GITHUB_WORKSPACE/pgmodeler/build/share/
-        ICON_FOLDER=$GITHUB_WORKSPACE/pgmodeler/
-        mkdir -p $ICON_FOLDER
-        cp $GITHUB_WORKSPACE/pgmodeler/assets/conf/pgmodeler_logo.png $ICON_FOLDER/pgmodeler.png
-
-        ./linuxdeployqt-continuous-x86_64.AppImage \
-            ./bin/pgmodeler \
-            -qmake=$Qt6_DIR/bin/qmake \
-            -verbose=2 \
-            -appimage
+        mv pgModeler-*.AppImage pgModeler-$SANITIZED_VERSION-x86_64.AppImage 2>/dev/null \
+          || mv pgmodeler-*.AppImage pgModeler-$SANITIZED_VERSION-x86_64.AppImage 2>/dev/null \
+          || true
 
     - name: Upload the AppImage as an artifact
       uses: actions/upload-artifact@v4
-      if: github.event_name == 'push' || github.event_name == 'pull_request'
       with:
-        # i.e v1.1.4 is a released build, but we remove the initial v from the version
         name: pgModeler-${{ env.SANITIZED_VERSION }}-x86_64.AppImage
-        path: ${{ github.workspace }}/pgmodeler/build/pgModeler-${{ env.SANITIZED_VERSION }}-x86_64.AppImage
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        path: ${{ github.workspace }}/pgmodeler/pgModeler-${{ env.SANITIZED_VERSION }}-x86_64.AppImage
 
-    - name: Upload the AppImage file in a release build
-      uses: actions/upload-release-asset@v1
-      if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-      with:
-        upload_url: ${{ needs.create-release.outputs.upload_url }}
-        asset_path: ${{ github.workspace }}/pgmodeler/build/pgModeler-${{ env.SANITIZED_VERSION }}-x86_64.AppImage
-        asset_name: pgModeler-${{ env.SANITIZED_VERSION }}-x86_64.AppImage
-        asset_content_type: application/gzip
+    - name: Upload the AppImage to release
+      run: |
+        gh release upload "${{ needs.create-release.outputs.tag_name }}" \
+          "$GITHUB_WORKSPACE/pgmodeler/pgModeler-$SANITIZED_VERSION-x86_64.AppImage" \
+          --repo "${{ github.repository }}" --clobber
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Upload the build files as an artifact
       uses: actions/upload-artifact@v4
-      if: github.event_name == 'push' || github.event_name == 'pull_request'
       with:
         name: pgmodeler-linux-build-${{ matrix.branch }}.zip
-        path: ${{ github.workspace }}/pgmodeler/build
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        path: ${{ github.workspace }}/pgmodeler/AppDir/usr
 
-    - name: Zip the build files
-      if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    - name: Zip and upload build files to release
       run: |
-        cd ${{ github.workspace }}/pgmodeler
-        zip -r pgmodeler-linux-build-${{ matrix.branch }}.zip build/*
-
-    - name: Upload the build zip file in a release build
-      uses: actions/upload-release-asset@v1
-      if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-      with:
-        upload_url: ${{ needs.create-release.outputs.upload_url }}
-        asset_path: ${{ github.workspace }}/pgmodeler/pgmodeler-linux-build-${{ matrix.branch }}.zip
-        asset_name: pgmodeler-linux-build-${{ matrix.branch }}.zip
-        asset_content_type: application/gzip
+        cd $GITHUB_WORKSPACE/pgmodeler
+        zip -r pgmodeler-linux-build-${{ matrix.branch }}.zip AppDir/usr/*
+        gh release upload "${{ needs.create-release.outputs.tag_name }}" \
+          "pgmodeler-linux-build-${{ matrix.branch }}.zip" \
+          --repo "${{ github.repository }}" --clobber
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   macos-build:
     runs-on: macos-latest
     needs: create-release
 
     strategy:
-      max-parallel: 3
-      fail-fast: true
+      fail-fast: false
       matrix:
-        branch: [ v1.1.5, v1.2.0-alpha1, develop ]
-        qt: ['6.6.1']
+        include:
+          - branch: v1.2.3
+            build_system: qmake
+            qt: '6.6.1'
+            pg_version: '15'
+          - branch: v2.0.0-beta
+            build_system: cmake
+            qt: '6.6.1'
+            pg_version: '17'
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
       with:
-        repository: pgmodeler/pgmodeler  # Specifies the repository to checkout
+        repository: pgmodeler/pgmodeler
         path: 'pgmodeler'
-        ref: ${{ matrix.branch }}  # Checks out the specific branch from the matrix
+        ref: ${{ matrix.branch }}
 
     - name: Installing Qt framework
       uses: jurplel/install-qt-action@v4
       with:
         version: ${{ matrix.qt }}
+        cache: true
 
-    - name: Installing Postgres and OpenSSL
+    - name: Installing PostgreSQL and dependencies
       run: |
-        brew install --quiet postgresql@15
-        brew unlink --quiet postgresql@15
-        brew link --quiet --overwrite postgresql@15
+        brew install --quiet postgresql@${{ matrix.pg_version }}
+        brew unlink --quiet postgresql@${{ matrix.pg_version }} 2>/dev/null || true
+        brew link --quiet --overwrite postgresql@${{ matrix.pg_version }}
         brew reinstall openssl@3
-        brew --prefix openssl@3
         brew install --quiet libxml2 libpq
-        ls -ltah $(brew --prefix openssl@3)
 
-    - name: Show current version of Xcode
-      run: xcodebuild -version
-
-    - name: Running qmake
+    - name: Set environment
       run: |
-        echo 'export PATH="/opt/homebrew/opt/postgresql@15/bin:$PATH"' >> /Users/runner/.bash_profile
-        export LDFLAGS="-L/opt/homebrew/opt/postgresql@15/lib"
-        export CPPFLAGS="-I/opt/homebrew/opt/postgresql@15/include"
-        export INSTALLATION_ROOT="/Applications/pgModeler.app/"
+        PG_PREFIX=$(brew --prefix postgresql@${{ matrix.pg_version }})
+        OPENSSL_PREFIX=$(brew --prefix openssl@3)
+        QT_ROOT=$(qmake -query QT_INSTALL_PREFIX)
+        INSTALLATION_ROOT=$GITHUB_WORKSPACE/pgmodeler/pgModeler.app
 
+        echo "PG_PREFIX=$PG_PREFIX" >> $GITHUB_ENV
+        echo "OPENSSL_PREFIX=$OPENSSL_PREFIX" >> $GITHUB_ENV
+        echo "QT_ROOT=$QT_ROOT" >> $GITHUB_ENV
+        echo "INSTALLATION_ROOT=$INSTALLATION_ROOT" >> $GITHUB_ENV
+
+    # --- qmake build (v1.x) ---
+    - name: Running qmake
+      if: matrix.build_system == 'qmake'
+      run: |
+        export LDFLAGS="-L$PG_PREFIX/lib"
+        export CPPFLAGS="-I$PG_PREFIX/include"
         cd $GITHUB_WORKSPACE/pgmodeler
-        ls -ltah
-        pwd
-        # git clone https://github.com/pgmodeler/plugins
-        #    BINDIR=$GITHUB_WORKSPACE/pgmodeler/build/bin \
-        #    PRIVATEBINDIR=$GITHUB_WORKSPACE/pgmodeler/build/bin \
-        #    PRIVATELIBDIR=$GITHUB_WORKSPACE/pgmodeler/build/lib \
-        #    CONFDIR=$GITHUB_WORKSPACE/pgmodeler/build/bin \
-
         qmake pgmodeler.pro -r \
             PREFIX=$INSTALLATION_ROOT/Contents \
-            PGSQL_INC="/opt/homebrew/opt/postgresql@15/include" \
-            PGSQL_LIB="/opt/homebrew/opt/postgresql@15/lib/libpq.dylib" \
-            CONFIG+=debug \
-            CONFIG+=release # CONFIG+=static
+            PGSQL_INC="$PG_PREFIX/include" \
+            PGSQL_LIB="$PG_PREFIX/lib/libpq.dylib" \
+            CONFIG+=release
 
-    - name: Building pgModeler
+    - name: Building with qmake
+      if: matrix.build_system == 'qmake'
       run: |
         cd $GITHUB_WORKSPACE/pgmodeler
-        ls -ltah
-        pwd
-        make -j6
+        make -j$(sysctl -n hw.ncpu)
         make install
 
-    - name: Dependencies
+    # --- cmake build (v2.x) ---
+    - name: Patch cmake paths for CI
+      if: matrix.build_system == 'cmake'
       run: |
-        export PGSQL_ROOT="/opt/homebrew/opt/postgresql@15/"
-        export BUILD_ROOT=$GITHUB_WORKSPACE/pgmodeler/build/
-        export QT_ROOT="/Users/runner/work/pgmodeler-builder/Qt/6.6.1/macos/"
-        export INSTALLATION_ROOT="/Applications/pgModeler.app/"
-        #export INSTALLATION_ROOT=$GITHUB_WORKSPACE/pgmodeler/build/bin/
-        export OPENSSL_ROOT="/opt/homebrew/opt/openssl@3/"
-
-        mkdir -p $INSTALLATION_ROOT/PlugIns/tls
-        mkdir -p $INSTALLATION_ROOT/Contents/Frameworks
-
-        ls -ltah $OPENSSL_ROOT/lib/
-        ls -ltah $PGSQL_ROOT/lib/
-
-        cp $PGSQL_ROOT/lib/libpq.5.dylib $INSTALLATION_ROOT/Contents/Frameworks/
-        cp $OPENSSL_ROOT/lib/libssl.* $INSTALLATION_ROOT/Contents/Frameworks/
-        cp $OPENSSL_ROOT/lib/libcrypto.* $INSTALLATION_ROOT/Contents/Frameworks/
-
-        install_name_tool -change "@loader_path/../lib/libcrypto.3.dylib" "@loader_path/../Frameworks/libcrypto.3.dylib" $INSTALLATION_ROOT/Contents/Frameworks/libssl.3.dylib
-        install_name_tool -change "@loader_path/../lib/libcrypto.3.dylib" "@loader_path/../Frameworks/libcrypto.3.dylib" $INSTALLATION_ROOT/Contents/Frameworks/libpq.5.dylib
-        install_name_tool -change "@loader_path/../lib/libssl.3.dylib" "@loader_path/../Frameworks/libssl.3.dylib" $INSTALLATION_ROOT/Contents/Frameworks/libpq.5.dylib
-        # install_name_tool -change libpq.5.dylib "@loader_path/../Frameworks/libpq.5.dylib" $INSTALLATION_ROOT/Contents/Frameworks/libpgconnector.dylib
-
-        #cp -r $QT_ROOT/plugins/platforms/tls/* $INSTALLATION_ROOT/PlugIns/tls/
-
-    - name: Index files DB
-      run: |
-        sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.locate.plist
-
-    - name: Run macdeploy
-      run: |
-        # locate pgmodeler
-        export INSTALLATION_ROOT="/Applications/pgModeler.app/"
-        # INSTALLATION_ROOT=$GITHUB_WORKSPACE/pgmodeler/build/bin/
-        BUILD_ROOT=$GITHUB_WORKSPACE/pgmodeler/build/
-        QT_ROOT=/Users/runner/work/pgmodeler-builder/Qt/6.6.1/macos/
         cd $GITHUB_WORKSPACE/pgmodeler
-        ls -ltah
-        ls -ltah apps/
-        ls -ltah $INSTALLATION_ROOT/
-        ls -ltah $INSTALLATION_ROOT/Contents
-        ls -ltah $INSTALLATION_ROOT/PlugIns
-        ls -ltah /Applications/
-        pwd
+        PG_INCDIR=$(pg_config --includedir)
+        PG_LIBDIR=$(pg_config --libdir)
+        sed -i '' "s|/Library/PostgreSQL/17/include|${PG_INCDIR}|g" DefaultPaths.cmake
+        sed -i '' "s|/Library/PostgreSQL/17/lib/libpq.dylib|${PG_LIBDIR}/libpq.dylib|g" DefaultPaths.cmake
+        sed -i '' $'1s/^/#include <QApplication>\\n/' libs/libgui/src/tools/modelexporthelper.cpp
 
-        sudo $QT_ROOT/bin/macdeployqt $INSTALLATION_ROOT \
-            $INSTALLATION_ROOT/pgmodeler-ch \
-            $INSTALLATION_ROOT/pgmodeler-cli
-
-    - name: Create .dmg from .app
+    - name: Running cmake
+      if: matrix.build_system == 'cmake'
       run: |
-        BUILD_ROOT=$GITHUB_WORKSPACE/pgmodeler/build/
-        sudo hdiutil create -volname "pgModeler" \
-                       -srcfolder "/Applications/pgModeler.app" \
-                       -ov -format UDZO "/tmp/pgModeler.dmg" -debug
+        cd $GITHUB_WORKSPACE/pgmodeler
+        cmake -B build-dir \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_PREFIX_PATH=$QT_ROOT \
+          -DPGM_PREFIX=$INSTALLATION_ROOT/Contents
 
-    - name: Sanitize version string
+    - name: Building with cmake
+      if: matrix.build_system == 'cmake'
       run: |
-        # Remove leading 'v' if present
+        cd $GITHUB_WORKSPACE/pgmodeler
+        cmake --build build-dir -j$(sysctl -n hw.ncpu)
+        cmake --install build-dir
+
+    # --- common post-build ---
+    - name: Create Info.plist if missing
+      run: |
         VER=${{ matrix.branch }}
         SANITIZED_VERSION=${VER#v}
         echo "SANITIZED_VERSION=$SANITIZED_VERSION" >> $GITHUB_ENV
 
-    - name: Upload the App as an artifact
+        if [ ! -f "$INSTALLATION_ROOT/Contents/Info.plist" ]; then
+          mkdir -p "$INSTALLATION_ROOT/Contents"
+          cat > "$INSTALLATION_ROOT/Contents/Info.plist" <<PLIST
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>CFBundleExecutable</key>
+            <string>pgmodeler</string>
+            <key>CFBundleIdentifier</key>
+            <string>io.pgmodeler</string>
+            <key>CFBundleName</key>
+            <string>pgModeler</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>CFBundleVersion</key>
+            <string>$SANITIZED_VERSION</string>
+            <key>CFBundleShortVersionString</key>
+            <string>$SANITIZED_VERSION</string>
+            <key>NSHighResolutionCapable</key>
+            <true/>
+        </dict>
+        </plist>
+        PLIST
+        fi
+
+    - name: Copy dependency libraries
+      run: |
+        mkdir -p $INSTALLATION_ROOT/Contents/Frameworks
+
+        cp $PG_PREFIX/lib/libpq.5.dylib $INSTALLATION_ROOT/Contents/Frameworks/ 2>/dev/null || true
+        cp $OPENSSL_PREFIX/lib/libssl.* $INSTALLATION_ROOT/Contents/Frameworks/ 2>/dev/null || true
+        cp $OPENSSL_PREFIX/lib/libcrypto.* $INSTALLATION_ROOT/Contents/Frameworks/ 2>/dev/null || true
+
+        cd $INSTALLATION_ROOT/Contents/Frameworks
+        install_name_tool -change "@loader_path/../lib/libcrypto.3.dylib" \
+          "@loader_path/../Frameworks/libcrypto.3.dylib" libssl.3.dylib 2>/dev/null || true
+        install_name_tool -change "@loader_path/../lib/libcrypto.3.dylib" \
+          "@loader_path/../Frameworks/libcrypto.3.dylib" libpq.5.dylib 2>/dev/null || true
+        install_name_tool -change "@loader_path/../lib/libssl.3.dylib" \
+          "@loader_path/../Frameworks/libssl.3.dylib" libpq.5.dylib 2>/dev/null || true
+
+    - name: Run macdeployqt
+      run: |
+        $QT_ROOT/bin/macdeployqt $INSTALLATION_ROOT \
+            -executable=$INSTALLATION_ROOT/Contents/MacOS/pgmodeler-ch \
+            -executable=$INSTALLATION_ROOT/Contents/MacOS/pgmodeler-cli
+
+    - name: Create .dmg from .app
+      run: |
+        hdiutil create -volname "pgModeler" \
+                   -srcfolder "$INSTALLATION_ROOT" \
+                   -ov -format UDZO "/tmp/pgModeler.dmg"
+
+    - name: Upload the .dmg as an artifact
       uses: actions/upload-artifact@v4
-      if: github.event_name == 'push' || github.event_name == 'pull_request'
       with:
         name: pgModeler-${{ env.SANITIZED_VERSION }}-arm.dmg
         path: /tmp/pgModeler.dmg
-        # path: ${{ env.GITHUB_WORKSPACE }}/pgmodeler/build/pgModeler.dmg
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Upload the App file in a release build
-      uses: actions/upload-release-asset@v1
-      if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-      with:
-        upload_url: ${{ needs.create-release.outputs.upload_url }}
-        asset_path: /tmp/pgModeler.dmg
-        # asset_path: ${{ env.GITHUB_WORKSPACE }}/pgmodeler/build/pgModeler.dmg
-        asset_name: pgModeler-${{ env.SANITIZED_VERSION }}-arm.dmg
-        asset_content_type: application/gzip
+    - name: Upload the .dmg to release
+      run: |
+        cp /tmp/pgModeler.dmg "/tmp/pgModeler-$SANITIZED_VERSION-arm.dmg"
+        gh release upload "${{ needs.create-release.outputs.tag_name }}" \
+          "/tmp/pgModeler-$SANITIZED_VERSION-arm.dmg" \
+          --repo "${{ github.repository }}" --clobber
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Upload the build files as an artifact
       uses: actions/upload-artifact@v4
-      if: github.event_name == 'push' || github.event_name == 'pull_request'
       with:
         name: pgmodeler-macos-build-${{ matrix.branch }}.zip
-        path: ${{ github.workspace }}/pgmodeler
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        path: ${{ github.workspace }}/pgmodeler/pgModeler.app
 
-    - name: Zip the build files
-      if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    - name: Zip and upload build files to release
       run: |
-        cd ${{ github.workspace }}
-        zip -r pgmodeler-macos-build-${{ matrix.branch }}.zip pgmodeler/*
-
-    - name: Upload the build zip file in a release build
-      uses: actions/upload-release-asset@v1
-      if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-      with:
-        upload_url: ${{ needs.create-release.outputs.upload_url }}
-        asset_path: ${{ github.workspace }}/pgmodeler-macos-build-${{ matrix.branch }}.zip
-        asset_name: pgmodeler-macos-build-${{ matrix.branch }}.zip
-        asset_content_type: application/gzip
+        cd $GITHUB_WORKSPACE
+        zip -r pgmodeler-macos-build-${{ matrix.branch }}.zip pgmodeler/pgModeler.app/*
+        gh release upload "${{ needs.create-release.outputs.tag_name }}" \
+          "pgmodeler-macos-build-${{ matrix.branch }}.zip" \
+          --repo "${{ github.repository }}" --clobber
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   cleanup-release:
     runs-on: ubuntu-latest
@@ -596,7 +619,6 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-
             const release_id = '${{ needs.create-release.outputs.release_id }}';
             const tag_name = '${{ needs.create-release.outputs.tag_name }}';
 
@@ -645,10 +667,9 @@ jobs:
                   console.log(`Tag ${tag_name} does not exist. No action needed.`);
                 } else {
                   console.log(`Error checking for tag existence: ${error.message}`);
-                  throw error; // Rethrow error if it's not a 404
+                  throw error;
                 }
               }
-
             } else {
               console.log('Non-default assets found. This release will not be deleted.');
               console.log('Moving the release to draft=false, prerelease=false.');
