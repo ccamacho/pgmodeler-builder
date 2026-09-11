@@ -423,11 +423,11 @@ jobs:
         include:
           - branch: v1.2.3
             build_system: qmake
-            qt: '6.6.1'
+            qt: '6.8.2'
             pg_version: '15'
           - branch: v2.0.0-beta
             build_system: cmake
-            qt: '6.6.1'
+            qt: '6.8.2'
             pg_version: '17'
 
     steps:
@@ -475,7 +475,8 @@ jobs:
             PREFIX=$INSTALLATION_ROOT/Contents \
             PGSQL_INC="$PG_PREFIX/include" \
             PGSQL_LIB="$PG_PREFIX/lib/libpq.dylib" \
-            CONFIG+=release
+            CONFIG+=release \
+            CONFIG+=sdk_no_version_check
 
     - name: Building with qmake
       if: matrix.build_system == 'qmake'
