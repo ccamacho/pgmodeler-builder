@@ -414,7 +414,7 @@ jobs:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   macos-build:
-    runs-on: macos-latest
+    runs-on: macos-15
     needs: create-release
 
     strategy:
@@ -423,11 +423,11 @@ jobs:
         include:
           - branch: v1.2.3
             build_system: qmake
-            qt: '6.8.2'
+            qt: '6.6.1'
             pg_version: '15'
           - branch: v2.0.0-beta
             build_system: cmake
-            qt: '6.8.2'
+            qt: '6.6.1'
             pg_version: '17'
 
     steps:
@@ -443,6 +443,16 @@ jobs:
       with:
         version: ${{ matrix.qt }}
         cache: true
+
+    - name: Patch Qt to remove AGL framework reference
+      run: |
+        QT_ROOT=$(qmake -query QT_INSTALL_PREFIX)
+        find "$QT_ROOT" -name "*.prl" | xargs grep -l "\-framework AGL" | \
+          xargs sed -i '' 's/ -framework AGL//g' 2>/dev/null || true
+        find "$QT_ROOT" -name "*.cmake" | xargs grep -l "AGL" | \
+          xargs sed -i '' 's/ -framework AGL//g' 2>/dev/null || true
+        find "$QT_ROOT" -name "*.pri" | xargs grep -l "AGL" | \
+          xargs sed -i '' 's/ -framework AGL//g' 2>/dev/null || true
 
     - name: Installing PostgreSQL and dependencies
       run: |
